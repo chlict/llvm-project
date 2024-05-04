@@ -11,16 +11,58 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
+#include "clang/AST/IgnoreExpr.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Sema/Sema.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace clang;
 
 namespace {
+struct Visitor2 : public RecursiveASTVisitor<Visitor2> {
+  bool VisitCallExpr(CallExpr *Call) {
+    llvm::errs() << "----VisitCallExpr\n";
+    Call->dump();
+    if (auto FD = dyn_cast<const FunctionDecl>(Call->getCalleeDecl())) {
+      if (FD->getQualifiedNameAsString() == "edsl::let") {
+        return HandleLet(Call);
+      }
+    };
+    return true;
+  }
+
+  bool HandleLet(CallExpr *Call) {
+    for (Expr *Argument : Call->arguments()) {
+      // Visit(Argument)
+      llvm::errs() << "------Argument\n";
+      Argument->dump();
+      // Ignore MaterializeTemporaryExpr & ImplicitCastExpr
+      auto SubExpr = IgnoreImplicitCastsExtraSingleStep(Argument);
+      llvm::errs() << "----IgnoreImplicit...\n";
+      SubExpr->dump();
+    }
+    return true;
+  }
+};
+
+struct Visitor1 : public RecursiveASTVisitor<Visitor1> {
+  bool VisitFunctionDecl(FunctionDecl *FD) {
+    static int count = 0;
+    // llvm::outs() << count << " FD->getQualifiedNameAsString() = " <<
+    // FD->getQualifiedNameAsString() << "\n";
+    count++;
+    if (FD->getQualifiedNameAsString() == "Test3") {
+      llvm::errs() << "Found Test3 - Call Visitor2\n";
+      FD->dump();
+      Visitor2 v2;
+      v2.TraverseDecl(FD);
+    }
+    return true;
+  }
+};
 
 class PrintFunctionsConsumer : public ASTConsumer {
   CompilerInstance &Instance;
@@ -32,18 +74,23 @@ public:
       : Instance(Instance), ParsedTemplates(ParsedTemplates) {}
 
   bool HandleTopLevelDecl(DeclGroupRef DG) override {
-    for (DeclGroupRef::iterator i = DG.begin(), e = DG.end(); i != e; ++i) {
-      const Decl *D = *i;
-      if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
-        llvm::errs() << "top-level-decl: \"" << ND->getNameAsString() << "\"\n";
-    }
+    llvm::errs() << "Enter HandleTopLevelDecl\n";
+    // for (DeclGroupRef::iterator i = DG.begin(), e = DG.end(); i != e; ++i) {
+    //   const Decl *D = *i;
+    //   if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
+    //     llvm::errs() << "top-level-decl: \"" << ND->getNameAsString() <<
+    //     "\"\n";
+    // }
 
     return true;
   }
 
-  void HandleTranslationUnit(ASTContext& context) override {
-    if (!Instance.getLangOpts().DelayedTemplateParsing)
-      return;
+  void HandleTranslationUnit(ASTContext &context) override {
+    llvm::errs() << "-----Enter HandleTranslationUnit\n";
+    Visitor1 visitor1;
+    visitor1.TraverseDecl(context.getTranslationUnitDecl());
+    // if (!Instance.getLangOpts().DelayedTemplateParsing)
+    //   return;
 
     // This demonstrates how to force instantiation of some templates in
     // -fdelayed-template-parsing mode. (Note: Doing this unconditionally for
@@ -72,12 +119,13 @@ public:
           *sema.LateParsedTemplateMap.find(FD)->second;
       sema.LateTemplateParser(sema.OpaqueParser, LPT);
       llvm::errs() << "late-parsed-decl: \"" << FD->getNameAsString() << "\"\n";
-    }   
+    }
   }
 };
 
 class PrintFunctionNamesAction : public PluginASTAction {
   std::set<std::string> ParsedTemplates;
+
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  llvm::StringRef) override {
